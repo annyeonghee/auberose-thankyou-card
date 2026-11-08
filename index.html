@@ -165,6 +165,9 @@ kbd{font-family:var(--ui);font-size:11px;border:1px solid var(--line-strong);bor
 .cropbar input{width:130px;accent-color:#E8D7BC}
 .cropbar button{background:var(--accent-ink);color:var(--ink);border-radius:8px;height:30px;padding:0 12px;font-size:12.5px}
 #textEdit{position:absolute;border:0;outline:1px dashed var(--accent);background:rgba(255,255,255,.25);resize:none;overflow:hidden;padding:0;margin:0;white-space:pre-wrap;word-break:keep-all;overflow-wrap:anywhere;transform-origin:center center;z-index:3}
+.snotice{position:absolute;left:12px;right:12px;top:12px;z-index:4;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line-strong);border-radius:12px;padding:10px 12px;font-size:12.5px;line-height:1.55;color:var(--ink);box-shadow:0 12px 28px -16px rgba(60,40,20,.55)}
+.snotice .sn-msg{flex:1 1 220px;min-width:0}
+.snotice .sn-acts{display:flex;gap:6px;flex:none;margin-left:auto}
 .drag-tip{position:absolute;left:14px;bottom:14px;font-size:11.5px;color:var(--muted);background:rgba(251,249,244,.85);padding:6px 10px;border-radius:8px;pointer-events:none}
 
 /* modal */
@@ -351,6 +354,10 @@ kbd{font-family:var(--ui);font-size:11px;border:1px solid var(--line-strong);bor
       <label style="display:flex;align-items:center;gap:6px">확대 <input type="range" id="cropZoom" min="1" max="4" step="0.01"></label>
       <button data-act="crop-done">완료</button>
     </div>
+    <div class="snotice" id="storageNotice" hidden role="status">
+      <span class="sn-msg"></span>
+      <span class="sn-acts"><button class="btn sm primary" data-act="open-external" hidden>사파리·크롬으로 열기</button><button class="btn sm" data-act="close-notice">닫기</button></span>
+    </div>
     <div class="drag-tip" id="dragTip">더블클릭: 텍스트 편집 · 사진 자르기 &nbsp;|&nbsp; Shift+클릭: 여러 개 선택</div>
     <div class="zoom">
       <button data-act="zoom-out" aria-label="축소"><svg class="ic sm"><use href="#i-minus"/></svg></button>
@@ -495,10 +502,10 @@ const PRESET_LIBRARY = [
     mood:'흑백 사진 네 컷이 세로로 흐르는 시네마틱한 무드', tags:['흑백','모던','사진 4장'],
     background:{color:'#F7F6F2'},
     elements:[
-      {type:'image', name:'사진 1', slot:1, x:90, y:78,  w:260, h:260, filter:'gray', tone:'#D5D1C9'},
-      {type:'image', name:'사진 2', slot:2, x:90, y:356, w:260, h:260, filter:'gray', tone:'#CFCAC2'},
-      {type:'image', name:'사진 3', slot:3, x:90, y:634, w:260, h:260, filter:'gray', tone:'#D5D1C9'},
-      {type:'image', name:'사진 4', slot:4, x:90, y:912, w:260, h:260, filter:'gray', tone:'#CFCAC2'},
+      {type:'image', name:'사진 1', slot:1, x:90, y:78,  w:260, h:260, tone:'#D5D1C9'},
+      {type:'image', name:'사진 2', slot:2, x:90, y:356, w:260, h:260, tone:'#CFCAC2'},
+      {type:'image', name:'사진 3', slot:3, x:90, y:634, w:260, h:260, tone:'#D5D1C9'},
+      {type:'image', name:'사진 4', slot:4, x:90, y:912, w:260, h:260, tone:'#CFCAC2'},
       {type:'text', name:'이름 (세로)', text:'ANDREY & SVETLANA', font:'italiana', size:45, ls:4, lh:1.2, color:'#1E1C1A', x:-62, y:301, w:900, rotation:90},
       {type:'text', name:'날짜', text:'11 . 07 . 2026', font:'cormorant', size:30, weight:400, italic:true, ls:2, x:460, y:782, w:460},
       {type:'text', name:'Thank you', text:'Thank you', font:'pinyon', size:110, lh:1.2, x:450, y:820, w:480},
@@ -573,8 +580,11 @@ const SWATCHES = ['#2A251F','#000000','#FFFFFF','#F7F6F2','#EFE9DF','#D9CBB5','#
 function createIndexedDBStore(){
   let dbp=null;
   const open=()=>dbp||(dbp=new Promise((res,rej)=>{
-    const r=indexedDB.open('wedding-thankyou-card',1);
-    r.onupgradeneeded=()=>{const d=r.result; d.createObjectStore('meta',{keyPath:'id'}); d.createObjectStore('docs',{keyPath:'id'});};
+    const r=indexedDB.open('wedding-thankyou-card',2);
+    r.onupgradeneeded=()=>{const d=r.result;
+      if(!d.objectStoreNames.contains('meta')) d.createObjectStore('meta',{keyPath:'id'});
+      if(!d.objectStoreNames.contains('docs')) d.createObjectStore('docs',{keyPath:'id'});
+      if(!d.objectStoreNames.contains('blobs')) d.createObjectStore('blobs');};
     r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
   }));
   const tx=(stores,mode,fn)=>open().then(db=>new Promise((res,rej)=>{
@@ -582,20 +592,29 @@ function createIndexedDBStore(){
     if(r&&'onsuccess' in r) r.onsuccess=()=>{out=r.result};
     t.oncomplete=()=>res(out); t.onerror=()=>rej(t.error); t.onabort=()=>rej(t.error);
   }));
-  return {
+  const getDoc=id=>tx(['docs'],'readonly',t=>t.objectStore('docs').get(id));
+  const api={
     kind:'browser',
     ready:()=>open().then(()=>true),
     list:()=>tx(['meta'],'readonly',t=>t.objectStore('meta').getAll()).then(a=>(a||[]).sort((x,y)=>y.updatedAt-x.updatedAt)),
-    get:id=>Promise.all([tx(['meta'],'readonly',t=>t.objectStore('meta').get(id)),tx(['docs'],'readonly',t=>t.objectStore('docs').get(id))])
+    get:id=>Promise.all([tx(['meta'],'readonly',t=>t.objectStore('meta').get(id)),getDoc(id)])
             .then(([m,d])=>m&&d?{...m,doc:d.doc}:null),
     put:p=>{const {doc,...meta}=p; return tx(['meta','docs'],'readwrite',t=>{t.objectStore('meta').put(meta); return t.objectStore('docs').put({id:p.id,doc});});},
-    remove:id=>tx(['meta','docs'],'readwrite',t=>{t.objectStore('meta').delete(id); return t.objectStore('docs').delete(id);}),
+    // 사진 원본: ArrayBuffer로 저장 (모든 모바일 브라우저에서 지원, 텍스트 변환 없이 원래 크기 그대로)
+    putBlob:async(id,blob)=>{const buf=await blob.arrayBuffer(); return tx(['blobs'],'readwrite',t=>t.objectStore('blobs').put({buf,type:blob.type},id));},
+    getBlob:id=>tx(['blobs'],'readonly',t=>t.objectStore('blobs').get(id)).then(v=>v?new Blob([v.buf],{type:v.type}):null),
+    removeBlobs:ids=>ids.length?tx(['blobs'],'readwrite',t=>{let r;for(const id of ids) r=t.objectStore('blobs').delete(id);return r;}):Promise.resolve(),
+    remove:async id=>{let ids=[];try{const d=await getDoc(id);ids=Object.keys(d?.doc?.assets||{});}catch{}
+      await tx(['meta','docs'],'readwrite',t=>{t.objectStore('meta').delete(id); return t.objectStore('docs').delete(id);});
+      try{await api.removeBlobs(ids);}catch{}},
   };
+  return api;
 }
 function createMemoryStore(){
-  const m=new Map();
-  return {kind:'memory', ready:async()=>true, list:async()=>[...m.values()].map(({doc,...x})=>x).sort((a,b)=>b.updatedAt-a.updatedAt),
-    get:async id=>m.has(id)?structuredClone(m.get(id)):null, put:async p=>{m.set(p.id,structuredClone(p))}, remove:async id=>{m.delete(id)}};
+  const m=new Map(), b=new Map();
+  return {kind:'memory', ready:async()=>true, list:async()=>[...m.values()].map(({doc,...x})=>x).sort((a,c)=>c.updatedAt-a.updatedAt),
+    get:async id=>m.has(id)?structuredClone(m.get(id)):null, put:async p=>{m.set(p.id,structuredClone(p))}, remove:async id=>{m.delete(id)},
+    putBlob:async(id,blob)=>{b.set(id,blob)}, getBlob:async id=>b.get(id)||null, removeBlobs:async ids=>{ids.forEach(i=>b.delete(i))}};
 }
 let Store = createMemoryStore();
 
@@ -683,14 +702,28 @@ if(document.fonts) document.fonts.addEventListener('loadingdone',()=>{fontVersio
    8. 이미지 에셋 캐시 (원본 + 편집용 축소본 + 필터본)
    ===================================================================== */
 const assetCache=new Map(); // id -> {img, ready, w, h, variants:{}}
+async function blobToImage(blob){
+  if(window.createImageBitmap){try{return await createImageBitmap(blob);}catch{}}
+  const url=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(r.error);r.readAsDataURL(blob);});
+  return dataUrlToImage(url);
+}
+function dataUrlToImage(src){return new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=()=>rej(new Error('decode'));i.src=src;});}
+const imgW=i=>i.naturalWidth||i.width, imgH=i=>i.naturalHeight||i.height;
+const thumbOf=info=>info?(info.thumb||info.src||''):'';
 function loadAsset(doc,id){
   let a=assetCache.get(id);
   if(a) return a;
   const info=doc.assets[id]; if(!info) return null;
   a={ready:false,w:info.w,h:info.h,variants:{},promise:null};
-  const img=new Image();
-  a.promise=new Promise(res=>{img.onload=()=>{a.img=img;a.w=img.naturalWidth;a.h=img.naturalHeight;a.ready=true;requestRender();res(a)}; img.onerror=()=>res(a);});
-  img.src=info.src; assetCache.set(id,a);
+  assetCache.set(id,a);
+  a.promise=(async()=>{
+    let img=null;
+    try{const blob=await Store.getBlob(id); if(blob) img=await blobToImage(blob);}catch{}
+    if(!img&&info.src){try{img=await dataUrlToImage(info.src);}catch{}}
+    if(img){a.img=img;a.w=imgW(img);a.h=imgH(img);a.ready=true;requestRender();}
+    else a.missing=true;
+    return a;
+  })();
   return a;
 }
 function variant(a,filter,preview){
@@ -880,7 +913,7 @@ async function saveProject(manual){
   let thumb='';try{thumb=thumbC.toDataURL('image/jpeg',.72)}catch{}
   E.project={...E.project,name:$('#projName').value.trim()||E.project.name,updatedAt:Date.now(),thumb,doc:structuredClone(E.doc)};
   try{await Store.put(E.project);const t=new Date();setSaveState('저장됨 · '+t.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}));if(manual)toast(Store.kind==='memory'?'이 브라우저는 저장 공간을 쓸 수 없어 이번 창에서만 보관돼요':'저장했어요. 새로고침해도 이어서 편집할 수 있어요');}
-  catch(err){setSaveState('저장 실패');toast('저장 공간이 부족해 저장하지 못했어요. 사용하지 않는 사진을 지워 보세요.',4000);}
+  catch(err){setSaveState('저장 안 됨');storageProblem(err);}
 }
 
 /* =====================================================================
@@ -1230,18 +1263,44 @@ async function decodeImageFile(file){
   const img=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=()=>rej(new Error('decode'));i.src=dataUrl;});
   return {img,w:img.naturalWidth,h:img.naturalHeight};
 }
+const PHOTO_MAX=2800; // 카드 전체를 덮는 배경 사진도 인쇄용(3200×4000) 출력에 충분한 크기
+function makeThumb(src,w,h,max=220){const k=Math.min(1,max/Math.max(w,h));const c=document.createElement('canvas');c.width=Math.max(1,Math.round(w*k));c.height=Math.max(1,Math.round(h*k));
+  const x=c.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(src,0,0,c.width,c.height);return c.toDataURL('image/jpeg',.72);}
 async function fileToAsset(file){
   const isImg=/^image\//.test(file.type)||/\.(jpe?g|jfif|png|heic|heif|webp)$/i.test(file.name);
   if(!isImg) throw new Error('type');
   let d; try{d=await decodeImageFile(file);}catch{throw new Error('decode');}
   if(!d.w||!d.h) throw new Error('decode');
-  const MAX=3600,k=Math.min(1,MAX/Math.max(d.w,d.h));
+  const k=Math.min(1,PHOTO_MAX/Math.max(d.w,d.h));
   const c=document.createElement('canvas');c.width=Math.round(d.w*k);c.height=Math.round(d.h*k);
   const x=c.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(d.img,0,0,c.width,c.height);
   if(d.img.close) d.img.close();
   let png=false;if(file.type==='image/png'||/\.png$/i.test(file.name)){const px=x.getImageData(0,0,c.width,c.height).data;for(let i=3;i<px.length;i+=4*97){if(px[i]<250){png=true;break;}}}
-  const src=png?c.toDataURL('image/png'):c.toDataURL('image/jpeg',.93);
-  const id=uid('a'); E.doc.assets[id]={src,w:c.width,h:c.height,name:file.name,added:Date.now()}; return id;
+  const blob=await new Promise(r=>c.toBlob(r,png?'image/png':'image/jpeg',.9));
+  const id=uid('a');
+  E.doc.assets[id]={w:c.width,h:c.height,name:file.name,added:Date.now(),thumb:makeThumb(c,c.width,c.height)};
+  assetCache.set(id,{ready:true,img:c,w:c.width,h:c.height,variants:{},promise:Promise.resolve()});
+  try{ if(blob) await Store.putBlob(id,blob); }
+  catch(err){ storageProblem(err); }
+  return id;
+}
+/* 저장 공간 문제 안내 (한 번만) */
+const IN_APP=/KAKAOTALK|Instagram|FBAN|FBAV|NAVER\(inapp|; wv\)|Line\/|DaumApps|everytimeApp|BAND\//i.test(navigator.userAgent);
+const IS_KAKAO=/KAKAOTALK/i.test(navigator.userAgent);
+let storageWarned=false;
+function storageProblem(err){
+  if(storageWarned) return; storageWarned=true;
+  const quota=err&&(err.name==='QuotaExceededError'||/quota/i.test(err.message||''));
+  showStorageNotice(quota);
+}
+function showStorageNotice(quota){
+  const n=$('#storageNotice'); if(!n) return;
+  n.querySelector('.sn-msg').textContent=IN_APP
+    ?'카카오톡·인스타그램 같은 앱 안의 브라우저는 저장 공간이 작아서 작업이 저장되지 않을 수 있어요. 사파리나 크롬에서 열어 주세요.'
+    :(quota?'이 브라우저의 저장 공간이 가득 찼어요. 지금 화면에서는 계속 편집하고 JPG로 저장할 수 있지만, 새로고침하면 사진이 사라질 수 있어요.'
+           :'이 브라우저에서는 작업을 저장할 수 없어요. 지금 화면에서는 계속 편집하고 JPG로 저장할 수 있어요.');
+  n.querySelector('[data-act=open-external]').hidden=!IS_KAKAO;
+  n.hidden=false;
 }
 async function handleFiles(files,target={mode:'library'}){
   files=files.filter(Boolean); if(!files.length) return;
@@ -1424,7 +1483,7 @@ function renderLayers(){
     if(el.groupId&&!gName[el.groupId]) gName[el.groupId]='G'+(++gi);
     const label=el.name||(el.type==='text'?el.text.split('\n')[0].slice(0,18):TYPE_LABEL[el.type]);
     const sub=el.type==='text'&&el.name?` · ${esc(el.text.split('\n')[0].slice(0,14))}`:'';
-    const th=el.type==='image'&&el.assetId?`<img src="${E.doc.assets[el.assetId].src}" alt="">`:icon(el.type==='image'?'image':el.type==='text'?'text':'shapes','sm');
+    const th=el.type==='image'&&el.assetId?`<img src="${thumbOf(E.doc.assets[el.assetId])}" alt="">`:icon(el.type==='image'?'image':el.type==='text'?'text':'shapes','sm');
     return `<div class="layer ${E.sel.includes(el.id)?'on':''} ${el.visible?'':'off'}" data-id="${el.id}">
       <span class="lt">${th}</span><span class="ln" data-act="layer-select">${esc(label)}<span style="color:var(--faint)">${sub}</span></span>
       ${el.groupId?`<span class="gb">${gName[el.groupId]}</span>`:''}
@@ -1440,13 +1499,13 @@ function renderPhotos(){
   if(!E.doc) return; const ids=Object.keys(E.doc.assets);
   const used=new Set(E.doc.elements.filter(e=>e.type==='image').map(e=>e.assetId)); if(E.doc.background.assetId) used.add(E.doc.background.assetId);
   $('#photoGrid').innerHTML=ids.map(id=>`<div class="photo" draggable="true" data-asset="${id}" tabindex="0" title="누르면 카드에 넣기 · 끌어서 원하는 칸에 놓기">
-    <img src="${E.doc.assets[id].src}" alt="">${used.has(id)?'<span class="used">사용 중</span>':''}
+    <img src="${thumbOf(E.doc.assets[id])}" alt="">${used.has(id)?'<span class="used">사용 중</span>':''}
     ${used.has(id)?'':`<button class="x" data-act="photo-del" title="삭제">${icon('close','sm')}</button>`}</div>`).join('');
   $('#photoEmpty').hidden=!!ids.length; $('#photoCount').textContent=ids.length?`· ${ids.length}장`:'';
 }
 $('#photoGrid').addEventListener('dragstart',e=>{const p=e.target.closest('.photo');if(p)e.dataTransfer.setData('text/x-asset',p.dataset.asset);});
 $('#photoGrid').addEventListener('click',e=>{const p=e.target.closest('.photo');if(!p)return;
-  if(e.target.closest('[data-act=photo-del]')){delete E.doc.assets[p.dataset.asset];commit();scheduleSave();renderPhotos();return;}
+  if(e.target.closest('[data-act=photo-del]')){const id=p.dataset.asset;delete E.doc.assets[id];assetCache.delete(id);Store.removeBlobs([id]).catch(()=>{});commit();scheduleSave();renderPhotos();return;}
   usePhoto(p.dataset.asset);});
 $('#photoGrid').addEventListener('keydown',e=>{if(e.key==='Enter'){const p=e.target.closest('.photo');if(p)usePhoto(p.dataset.asset);}});
 
@@ -1489,6 +1548,8 @@ document.addEventListener('click',e=>{
     case 'zoom-in': setZoom(E.zoom*1.2); break; case 'zoom-out': setZoom(E.zoom/1.2); break;
     case 'zoom-fit': fitView(); positionTextEdit(); requestRender(); break;
     case 'crop-done': exitCrop(); break;
+    case 'close-notice': $('#storageNotice').hidden=true; break;
+    case 'open-external': location.href='kakaotalk://web/openExternal?url='+encodeURIComponent(location.href); break;
     case 'add-text': addText(b.dataset.kind); break;
     case 'phrase': addPhrase(PHRASES[+b.dataset.i]); break;
     case 'add-shape': addShape(b.dataset.shape); break;
@@ -1660,6 +1721,20 @@ function showGallery(){
   E.project=null;E.doc=null; $('#editor').hidden=true; $('#gallery').hidden=false; document.title='Wedding Thank You Card';
   renderRecent(); requestAnimationFrame(renderGalleryThumbs);
 }
+function dataUrlToBlob(u){const [h,b64]=u.split(',');const mime=(h.match(/data:([^;]+)/)||[])[1]||'image/jpeg';const bin=atob(b64);const a=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);return new Blob([a],{type:mime});}
+async function migrateAssets(doc){
+  let changed=false;
+  for(const [id,info] of Object.entries(doc.assets)){
+    if(!info.src) continue;
+    try{
+      const img=await dataUrlToImage(info.src);
+      if(!info.thumb) info.thumb=makeThumb(img,imgW(img),imgH(img));
+      await Store.putBlob(id,dataUrlToBlob(info.src));
+      delete info.src; changed=true;
+    }catch(err){ storageProblem(err); break; }
+  }
+  if(changed&&E.doc===doc){ renderPhotos(); renderLayers(); saveProject(); }
+}
 function openEditor(proj){
   E.project=proj; E.doc=proj.doc; E.sel=[]; E.cropId=null; E.editingId=null; $('#cropBar').hidden=true; ta.hidden=true;
   E.doc.elements=E.doc.elements.map(e=>normalizeEl(e));
@@ -1667,6 +1742,9 @@ function openEditor(proj){
   lsSet('wtyc:last',proj.id);
   resetHistory(); setTab(E.tab); if(matchMedia('(max-width:900px)').matches) closeSheet();
   requestAnimationFrame(()=>{fitView();afterDocChange();});
+  migrateAssets(E.doc);
+  if(IN_APP&&!storageWarned){storageWarned=true;showStorageNotice(false);}
+  try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist().catch(()=>{});}catch{}
 }
 $('#projName').addEventListener('change',()=>{if(E.project){E.project.name=$('#projName').value.trim()||E.project.name;saveProject();}});
 window.addEventListener('hashchange',route);
