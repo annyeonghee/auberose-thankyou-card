@@ -168,6 +168,11 @@ kbd{font-family:var(--ui);font-size:11px;border:1px solid var(--line-strong);bor
 .snotice{position:absolute;left:12px;right:12px;top:12px;z-index:4;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line-strong);border-radius:12px;padding:10px 12px;font-size:12.5px;line-height:1.55;color:var(--ink);box-shadow:0 12px 28px -16px rgba(60,40,20,.55)}
 .snotice .sn-msg{flex:1 1 220px;min-width:0}
 .snotice .sn-acts{display:flex;gap:6px;flex:none;margin-left:auto}
+.adj{display:flex;flex-direction:column}
+.adj-v{text-align:right;font-size:12px;font-variant-numeric:tabular-nums;color:var(--faint);border-radius:6px;padding:3px 4px}
+.adj-v.on{color:var(--accent);font-weight:500}
+.adj-v.on:hover{background:var(--accent-soft)}
+.adj-hint{display:flex;justify-content:space-between;font-size:10.5px;color:var(--faint);padding:0 52px 0 70px;margin-top:-4px}
 .drag-tip{position:absolute;left:14px;bottom:14px;font-size:11.5px;color:var(--muted);background:rgba(251,249,244,.85);padding:6px 10px;border-radius:8px;pointer-events:none}
 
 /* modal */
@@ -638,15 +643,21 @@ const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch{}};
 const DEFAULTS = {
   common:{rotation:0, opacity:1, visible:true, locked:false, groupId:null},
   text:{text:'Text', font:'cormorant', size:32, weight:400, bold:false, italic:false, color:'#2A251F', ls:0, lh:1.3, align:'center', w:600, h:40},
-  image:{assetId:null, slot:0, zoom:1, fx:.5, fy:.5, filter:'none', mask:'rect', radius:0, borderWidth:0, borderColor:'#FFFFFF', flipX:false, tone:'#DAD3C7'},
+  image:{assetId:null, slot:0, zoom:1, fx:.5, fy:.5, filter:'none', adj:null, mask:'rect', radius:0, borderWidth:0, borderColor:'#FFFFFF', flipX:false, tone:'#DAD3C7'},
   rect:{fill:'#EFE9DF', stroke:'#2A251F', strokeWidth:0, radius:0, arch:false},
   ellipse:{fill:'#EFE9DF', stroke:'#2A251F', strokeWidth:0},
   line:{color:'#2A251F', h:2, dash:false},
 };
+/* 사진 보정: 모두 -100 ~ 100, 0이 원본 */
+const ADJ0={temp:0,tint:0,bright:0,contrast:0,sat:0};
+const ADJ_LIST=[['temp','색온도','차갑게','따뜻하게'],['tint','색조','초록','마젠타'],['bright','밝기','어둡게','밝게'],['contrast','대비','부드럽게','선명하게'],['sat','채도','흐리게','진하게']];
+const adjKey=adj=>adj?ADJ_LIST.map(([k])=>adj[k]||0).join(','):'';
+const hasAdj=adj=>!!adj&&ADJ_LIST.some(([k])=>adj[k]);
 const TYPE_LABEL={image:'사진',text:'텍스트',rect:'사각형',ellipse:'원',line:'선'};
 function normalizeEl(src){
   const el={id:uid(), x:0, y:0, w:200, h:200, ...DEFAULTS.common, ...DEFAULTS[src.type], ...src};
   if(src.groupId===undefined) el.groupId=null;
+  if(el.type==='image') el.adj={...ADJ0,...(src.adj||{})};
   if(el.type==='text'&&!FONT_BY_KEY[el.font]){el.font=FONT_REPLACED[el.font]||'cormorant';el.weight=nearestWeight(FONT_BY_KEY[el.font],el.weight||400);}
   return el;
 }
@@ -726,31 +737,49 @@ function loadAsset(doc,id){
   })();
   return a;
 }
-function variant(a,filter,preview){
-  const key=filter+(preview?'|p':'');
+function variant(a,filter,preview,adj){
+  const useAdj=hasAdj(adj);
+  const key=filter+'|'+(useAdj?adjKey(adj):'')+(preview?'|p':'');
   if(a.variants[key]) return a.variants[key];
   const maxE=preview?1400:Infinity;
   const k=Math.min(1,maxE/Math.max(a.w,a.h));
   let src=a.img;
-  if(k<1||filter!=='none'){
+  if(k<1||filter!=='none'||useAdj){
     const c=document.createElement('canvas'); c.width=Math.round(a.w*k); c.height=Math.round(a.h*k);
     const x=c.getContext('2d'); x.imageSmoothingQuality='high'; x.drawImage(a.img,0,0,c.width,c.height);
-    if(filter!=='none'){
+    if(filter!=='none'||useAdj){
       const d=x.getImageData(0,0,c.width,c.height),p=d.data;
-      for(let i=0;i<p.length;i+=4){const r=p[i],g=p[i+1],b=p[i+2];const l=.2126*r+.7152*g+.0722*b;
-        if(filter==='gray'){const v=clamp((l-128)*1.06+128,0,255);p[i]=p[i+1]=p[i+2]=v;}
-        else if(filter==='warm'){p[i]=clamp(r*.9+l*.1+14,0,255);p[i+1]=clamp(g*.92+l*.08+5,0,255);p[i+2]=clamp(b*.84+l*.06-6,0,255);}
-        else if(filter==='fade'){p[i]=r*.82+40;p[i+1]=g*.82+38;p[i+2]=b*.82+34;}
+      const T=useAdj?(adj.temp||0)/100:0, N=useAdj?(adj.tint||0)/100:0, B=useAdj?(adj.bright||0)/100:0,
+            C=useAdj?(adj.contrast||0)/100:0, S=useAdj?(adj.sat||0)/100:0;
+      // 화이트밸런스: 채널별 배율 (색온도는 빨강<->파랑, 색조는 초록<->마젠타)
+      const kr=1+T*.18+N*.06, kg=1-N*.16, kb=1-T*.22+N*.06;
+      const bAdd=B*60, cMul=C>=0?1+C*.9:1+C*.6, sMul=1+S;
+      for(let i=0;i<p.length;i+=4){
+        let r=p[i],g=p[i+1],b=p[i+2];
+        if(useAdj){
+          r*=kr; g*=kg; b*=kb;
+          r+=bAdd; g+=bAdd; b+=bAdd;
+          r=(r-128)*cMul+128; g=(g-128)*cMul+128; b=(b-128)*cMul+128;
+          if(S){const L=.2126*r+.7152*g+.0722*b; r=L+(r-L)*sMul; g=L+(g-L)*sMul; b=L+(b-L)*sMul;}
+          r=clamp(r,0,255); g=clamp(g,0,255); b=clamp(b,0,255);
+        }
+        const l=.2126*r+.7152*g+.0722*b;
+        if(filter==='gray'){const v=clamp((l-128)*1.06+128,0,255);r=g=b=v;}
+        else if(filter==='warm'){r=clamp(r*.9+l*.1+14,0,255);g=clamp(g*.92+l*.08+5,0,255);b=clamp(b*.84+l*.06-6,0,255);}
+        else if(filter==='fade'){r=r*.82+40;g=g*.82+38;b=b*.82+34;}
+        p[i]=r;p[i+1]=g;p[i+2]=b;
       }
       x.putImageData(d,0,0);
     }
     src=c;
   }
+  // 슬라이더를 움직일 때 쌓이는 중간 결과는 최근 것만 남김
+  const keys=Object.keys(a.variants); if(keys.length>=8) delete a.variants[keys[0]];
   return a.variants[key]={src,k:src===a.img?1:k};
 }
-function assetSource(doc,id,filter,mode){
+function assetSource(doc,id,filter,mode,adj){
   const a=loadAsset(doc,id); if(!a||!a.ready) return null;
-  const v=variant(a,filter||'none',mode!=='export');
+  const v=variant(a,filter||'none',mode!=='export',adj);
   return {src:v.src,k:v.k,w:a.w,h:a.h};
 }
 function ensureAssets(doc){
@@ -842,7 +871,7 @@ function drawEl(ctx,doc,el,mode,opts){
     if(el.dash){const seg=Math.max(4,h*4),gap=Math.max(3,h*3);for(let x=-w/2;x<w/2;x+=seg+gap) ctx.fillRect(x,-h/2,Math.min(seg,w/2-x),h);}
     else ctx.fillRect(-w/2,-h/2,w,h);
   } else if(el.type==='image'){
-    const s=el.assetId?assetSource(doc,el.assetId,el.filter,mode):null;
+    const s=el.assetId?assetSource(doc,el.assetId,el.filter,mode,el.adj):null;
     const kind=maskKind(el), r=maskRadius(el);
     if(s&&opts.cropId===el.id){ // 자르기 모드: 프레임 밖 원본을 흐리게
       const c=cropRect(el,s); ctx.save(); ctx.globalAlpha=.32; if(el.flipX) ctx.scale(-1,1);
@@ -1062,7 +1091,7 @@ cv.addEventListener('pointermove',e=>{
   if(A.type==='rotate'){const el=A.el,c={x:el.x+el.w/2,y:el.y+el.h/2};let a=Math.atan2(p.y-c.y,p.x-c.x)/deg+90;
     if(e.shiftKey)a=Math.round(a/15)*15;else{const n=Math.round(a/45)*45;if(Math.abs(a-n)<4)a=n;}
     a=((a+180)%360+360)%360-180; el.rotation=Math.round(a*10)/10; requestRender();return;}
-  if(A.type==='crop'){const el=A.el,s=assetSource(E.doc,el.assetId,el.filter,'edit');if(!s)return;
+  if(A.type==='crop'){const el=A.el,s=assetSource(E.doc,el.assetId,el.filter,'edit',el.adj);if(!s)return;
     const c=cropRect({...el,fx:A.fx,fy:A.fy},s);const a=-(el.rotation||0)*deg,dx0=p.x-A.start.x,dy0=p.y-A.start.y;
     let dx=dx0*Math.cos(a)-dy0*Math.sin(a),dy=dx0*Math.sin(a)+dy0*Math.cos(a); if(el.flipX)dx=-dx;
     const rx=s.w-c.cw,ry=s.h-c.ch;
@@ -1360,6 +1389,7 @@ const numIn=(label,prop,val,step=1)=>`<label class="num">${label}<input type="nu
 const swatch=(prop,val,allowNone=false)=>`<div class="sw">${allowNone?`<button data-act="setv" data-prop="${prop}" data-val="" title="없음" style="background:linear-gradient(135deg,#fff 45%,#c55 46%,#c55 54%,#fff 55%)" class="${!val?'on':''}"></button>`:''}${SWATCHES.map(c=>`<button data-act="setv" data-prop="${prop}" data-val="${c}" style="background:${c}" title="${c}" class="${(val||'').toUpperCase()===c?'on':''}"></button>`).join('')}<input type="color" data-prop="${prop}" value="${val||'#ffffff'}" title="직접 고르기"></div>`;
 const seg=(prop,opts,val)=>`<div class="seg">${opts.map(([v,l])=>`<button data-act="setv" data-prop="${prop}" data-val="${v}" class="${String(val)===String(v)?'on':''}">${l}</button>`).join('')}</div>`;
 const fmtPct=v=>Math.round(v*100)+'%';
+const fmtSigned=v=>(v>0?'+':'')+Math.round(v);
 const SEC=(t,b)=>`<section class="pp-sec"><h4>${t}</h4>${b}</section>`;
 
 function renderProps(){
@@ -1394,6 +1424,12 @@ function renderProps(){
       ${el.assetId?rng('확대','zoom',1,4,.01,el.zoom,v=>(+v).toFixed(2)+'×')+rng('가로 위치','fx',0,1,.01,el.fx,fmtPct)+rng('세로 위치','fy',0,1,.01,el.fy,fmtPct):''}`);
     body+=SEC('비율',`<div class="grid4">${[['0','원본'],['1','1:1'],['0.8','4:5'],['0.75','3:4'],['0.6667','2:3'],['1.5','3:2'],['1.7778','16:9'],['0.5625','9:16']].map(([v,l])=>`<button class="ibtn" data-act="ratio" data-val="${v}">${l}</button>`).join('')}</div>`);
     body+=SEC('필터',seg('filter',[['none','원본'],['gray','흑백'],['warm','웜톤'],['fade','필름']],el.filter));
+    if(el.assetId){const a=el.adj||ADJ0;
+      body+=SEC('보정',`${ADJ_LIST.map(([k,l,lo,hi])=>`<div class="adj">
+        <label class="ctl"><span>${l}</span><input type="range" id="pp-adj-${k}" data-prop="adj.${k}" min="-100" max="100" step="1" value="${a[k]||0}">
+        <button class="adj-v ${a[k]?'on':''}" data-act="adj-reset" data-k="${k}" title="${l} 원래대로">${fmtSigned(a[k]||0)}</button></label>
+        <div class="adj-hint"><span>${lo}</span><span>${hi}</span></div></div>`).join('')}
+        <button class="ibtn" data-act="adj-reset-all" ${hasAdj(a)?'':'disabled'}>보정 전체 초기화</button>`);}
     body+=SEC('프레임',seg('mask',[['rect','사각'],['rounded','둥근'],['arch','아치'],['circle','원형']],el.mask)
       +(el.mask==='rect'?rng('모서리','radius',0,200,1,el.radius||0,v=>v+'px'):'')
       +rng('테두리','borderWidth',0,40,1,el.borderWidth||0,v=>v+'px')+(el.borderWidth>0?swatch('borderColor',el.borderColor):''));
@@ -1436,6 +1472,12 @@ function commonActs(els){
     <button class="ibtn danger" data-act="delete">${icon('trash','sm')}삭제</button></div>`);
 }
 function applyProp(prop,raw,live){
+  if(prop.startsWith('adj.')){const k=prop.slice(4);
+    for(const el of selEls().filter(e=>e.type==='image'&&!e.locked)) el.adj={...ADJ0,...(el.adj||{}),[k]:Math.round(+raw)};
+    requestRender();
+    const b=propPane.querySelector(`[data-act=adj-reset][data-k="${k}"]`); if(b){b.textContent=fmtSigned(+raw);b.classList.toggle('on',+raw!==0);}
+    if(!live){commit();renderProps();}
+    return;}
   if(prop.startsWith('bg.')){E.doc.background[prop.slice(3)]=raw; requestRender(); renderBgPane(); if(!live){commit();renderProps();} return;}
   const els=selEls().filter(e=>!e.locked); if(!els.length) return;
   for(const el of els){
@@ -1548,6 +1590,8 @@ document.addEventListener('click',e=>{
     case 'zoom-in': setZoom(E.zoom*1.2); break; case 'zoom-out': setZoom(E.zoom/1.2); break;
     case 'zoom-fit': fitView(); positionTextEdit(); requestRender(); break;
     case 'crop-done': exitCrop(); break;
+    case 'adj-reset': if(el&&el.type==='image'){el.adj={...ADJ0,...(el.adj||{}),[b.dataset.k]:0};commit();renderProps();requestRender();} break;
+    case 'adj-reset-all': if(el&&el.type==='image'){el.adj={...ADJ0};commit();renderProps();requestRender();toast('보정을 원래대로 돌렸어요');} break;
     case 'close-notice': $('#storageNotice').hidden=true; break;
     case 'open-external': location.href='kakaotalk://web/openExternal?url='+encodeURIComponent(location.href); break;
     case 'add-text': addText(b.dataset.kind); break;
